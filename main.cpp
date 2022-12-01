@@ -1,7 +1,12 @@
 
 #include <vector>
+#include <fstream>
+#include <string>
 #include <optional>
 #include <iostream>
+#include <tuple>
+#include <memory>
+#include <map>
 #include <glpk.h>
 
 struct Domino{
@@ -16,8 +21,9 @@ struct Domino{
 //each spot on the board will either be occupied or not
 struct PlaySpace{
     bool occupied   = false;      //is there a domino on this spot
-    int placedID    = 0;           //unique ID for the piece placed at this spot   
+    int placedID    = 0;          //unique ID for the piece placed at this spot   
     int key         = 0;          //value for the play spot to match with a domino
+    int uID         = 0;          //unique ID for the new space
 
     PlaySpace(const int& key) : key(key){ }
 
@@ -29,6 +35,32 @@ struct PlaySpace{
 
 class Board{
 public:
+    //get play space at specific index in a linear search of board indexed by the number of optional<> which contain a value
+    PlaySpace at(int index){
+        int counter = 0;
+
+        for (int i = 0; i < spaces.size(); i++){
+            for (int j = 0; j < spaces[i].size(); j++){
+                if (spaces[i][j] && counter == index)
+                    return spaces[i][j].value();
+                else if (spaces[i][j]){
+                    counter++; 
+                }
+            }
+        }
+    }
+
+    int numLocations(){
+        int counter = 0;
+
+        for (int i = 0; i < spaces.size(); i++){
+            for (int j = 0; j < spaces[i].size(); j++){
+                if (spaces[i][j])
+                    counter++; 
+            }
+        }
+        return counter; 
+    }
     /// @brief Prints the current state of the board. Default behavior is to print the board with the keys for the play spaces.
     /// @param printPlacedDominoPieces Should the domino piece uniqueIDs be printed rather than the keys for the play spaces 
     void print(bool printPlacedDominoPieces = false){
@@ -198,28 +230,100 @@ public:
         dominoPieces.push_back(Domino(key1, key2, dominoPieces.size()));  
     }
 
-    void solve(){
-        //check that there is enough pieces for a solution 
-        if (board.isSolutionPossible(dominoPieces)){
-            auto res = processPuzzle(dominoPieces, board, 0); 
-            res.print(true);
-            if (res.isComplete()){
-                std::cout << "Solved" << std::endl;
-            }
-        }
-    }
+    std::vector<double> solve(){
 
-    MathPuzzle(){
+        //ensure solution is possible
+        if (!board.isSolutionPossible(dominoPieces)){
+            return std::vector<double>(dominoPieces.size()*2, 0.0); 
+        }
+
+        //init structures for ILP
+        initProgVars(); 
+
+        glp_smcp smcp;
+        //create glpk problem 
         auto lp = glp_create_prob();
-        glp_set_prob_name(lp, "DOMMATH"); 
+        glp_set_prob_name(lp, "DOM_MATH"); 
         glp_set_obj_dir(lp, GLP_MIN); 
 
+        glp_init_smcp(&smcp); 
+        smcp.msg_lev = GLP_MSG_OFF; 
         
+        //create rules and bounds for rules, upper and lower
+        int progVarsRowCounter = 1; 
+        int bounding = 0; 
+        glp_add_rows(lp, dominoPieces.size()*4); 
+        //case 1
+        //All pieces must be used so each piece will cover only two locations for some given piece
+        //for some given SUM(i) == 2
+        for (progVarsRowCounter; progVarsRowCounter < dominoPieces.size(); progVarsRowCounter++) {
+            glp_set_row_bnds(lp, progVarsRowCounter, GLP_DB, 2.0, 2.0); 
+        }
+
+        
+        //case 2
+        //All playspaces must be covered 
+        //For a given location the SUM == 1
+        bounding = progVarsRowCounter + dominoPieces.size();
+        for (progVarsRowCounter; progVarsRowCounter < bounding; progVarsRowCounter++){
+            glp_set_row_bnds(lp, progVarsRowCounter, GLP_DB, 1.0, 1.0); 
+        }
+
+        //case 3
+        //Tiles must be placed on locations which are adjacent and have inverted orientations at each location 
+        //Two cases for each tiles
+        bounding = progVarsRowCounter + dominoPieces.size(); 
+        for (progVarsRowCounter; progVarsRowCounter < bounding; progVarsRowCounter++){
+            glp_set_row_bnds(lp, progVarsRowCounter, GLP_DB, 1.0, 1.0); 
+        }
+        bounding = progVarsRowCounter + dominoPieces.size();
+        for (progVarsRowCounter; progVarsRowCounter < bounding; progVarsRowCounter++){
+            glp_set_row_bnds(lp, progVarsRowCounter, GLP_DB, -1.0, -1.0); 
+        }
+
+        std::unique_ptr<int> ia = std::unique_ptr<int>(new int[progVarsRowCounter]);                   //row index of non-zero entry
+        std::unique_ptr<int> ja = std::unique_ptr<int>(new int[progVars.size()]);               //column index of non-zero entry
+        std::unique_ptr<double> ar = std::unique_ptr<double>(new double[progVars.size()]);          //value 
+        double z = 0; 
+
+        //populate A matrix 
+        int rowCounter = 0; 
+        for (int i = 0; i < progVars.size(); i++){
+            //case 1
+            
+
+            //case 2
+
+            //case 3
+        }
     }
 
 private:
     std::vector<Domino> dominoPieces{};
+    std::map<std::tuple<int, int, int>, int> intProgVars{}; //container for variables being used to map to linear programming problem
+    std::vector<std::tuple<int, int, int>> progVars{}; 
 
+    void initProgVars(){
+        int writeCounter = 0; 
+        std::tuple<int, int, int> var{};                    //new var for ILP mapping
+
+        int numBoardLocations = board.numLocations(); 
+
+        //create variables for all possible states of a piece
+        progVars.resize(numBoardLocations * (int)dominoPieces.size() * 4); 
+
+        for (int i = 0; i < dominoPieces.size(); i++){
+            for (int j = 0; j < 4; j++){
+                for (int k = 0; k < numBoardLocations; k++){
+                    if ((k == 0 || k == 2) && dominoPieces.at(i).keys.first == board.at(k).key){
+                        intProgVars.insert(std::pair<std::tuple<int, int, int>,int>(std::tuple<int,int,int>(i,j,k), progVars.size()));
+                        progVars.push_back(std::tuple<int,int,int>(i,j,k));
+                    }
+                }
+            }
+        }
+    }
+    
     /// @brief 
     /// @param currentDominos 
     /// @param currentBoard 
@@ -274,195 +378,52 @@ private:
 int main(int argc, char **argv){
     MathPuzzle puzzle = MathPuzzle(); 
 
-    //test case - 1
-    // puzzle.board.addSpace(1, 0, 0);
-    // puzzle.board.addSpace(2, 0, 0);
-    // puzzle.board.addSpace(0, 1, 0);
-    // puzzle.board.addSpace(1, 1, 1);
-    // puzzle.board.addSpace(2, 1, 1); 
-    // puzzle.board.addSpace(3, 1, 1); 
-    // puzzle.board.addSpace(1, 2, 1); 
-    // puzzle.board.addSpace(2, 2, 2); 
-
-    // puzzle.newDomino(0, 0); 
-    // puzzle.newDomino(0, 1); 
-    // puzzle.newDomino(1, 1); 
-    // puzzle.newDomino(1, 2); 
-
-    //test case - 2
-    // puzzle.board.addSpace(4, 0, 3);
-    // puzzle.board.addSpace(5, 0, 3); 
-    // puzzle.board.addSpace(3, 1, 0); 
-    // puzzle.board.addSpace(4, 1, 3);
-    // puzzle.board.addSpace(5, 1, 1);
-    // puzzle.board.addSpace(6, 1, 6);
-    // puzzle.board.addSpace(3, 2, 1);
-    // puzzle.board.addSpace(4, 2, 5); 
-    // puzzle.board.addSpace(5, 2, 0);
-    // puzzle.board.addSpace(6, 2, 6);
-    // puzzle.board.addSpace(1, 3, 2);
-    // puzzle.board.addSpace(2, 3, 2);
-    // puzzle.board.addSpace(3, 3, 3); 
-    // puzzle.board.addSpace(4, 3, 4);
-    // puzzle.board.addSpace(5, 3, 4);
-    // puzzle.board.addSpace(6, 3, 4);
-    // puzzle.board.addSpace(7, 3, 5);
-    // puzzle.board.addSpace(8, 3, 4);
-    // puzzle.board.addSpace(0, 4, 1);
-    // puzzle.board.addSpace(1, 4, 4);
-    // puzzle.board.addSpace(2, 4, 0);
-    // puzzle.board.addSpace(3, 4, 2);
-    // puzzle.board.addSpace(4, 4, 5);
-    // puzzle.board.addSpace(5, 4, 0);
-    // puzzle.board.addSpace(6, 4, 5);
-    // puzzle.board.addSpace(7, 4, 5);
-    // puzzle.board.addSpace(8, 4, 6);
-    // puzzle.board.addSpace(9, 4, 6);
-    // puzzle.board.addSpace(0, 5, 0);
-    // puzzle.board.addSpace(1, 5, 4);
-    // puzzle.board.addSpace(2, 5, 5);
-    // puzzle.board.addSpace(3, 5, 5);
-    // puzzle.board.addSpace(4, 5, 2);
-    // puzzle.board.addSpace(5, 5, 6);
-    // puzzle.board.addSpace(6, 5, 1);
-    // puzzle.board.addSpace(7, 5, 2); 
-    // puzzle.board.addSpace(8, 5, 3);
-    // puzzle.board.addSpace(9, 5, 1);
-    // puzzle.board.addSpace(1, 6, 0);
-    // puzzle.board.addSpace(2, 6, 0);
-    // puzzle.board.addSpace(3, 6, 2);
-    // puzzle.board.addSpace(4, 6, 4);
-    // puzzle.board.addSpace(5, 6, 4);
-    // puzzle.board.addSpace(6, 6, 0);
-    // puzzle.board.addSpace(7, 6, 6);
-    // puzzle.board.addSpace(8, 6, 1);
-    // puzzle.board.addSpace(3, 7, 3); 
-    // puzzle.board.addSpace(4, 7, 6);
-    // puzzle.board.addSpace(5, 7, 1);
-    // puzzle.board.addSpace(6, 7, 1);
-    // puzzle.board.addSpace(3, 8, 3);
-    // puzzle.board.addSpace(4, 8, 5);
-    // puzzle.board.addSpace(5, 8, 2);
-    // puzzle.board.addSpace(6, 8, 6);
-    // puzzle.board.addSpace(4, 9, 2);
-    // puzzle.board.addSpace(5, 9, 3);
+    if (argc != 3){
+        std::cout << argc << "wrong number" << std::endl;
+        return 0; 
+    }
     
-    // puzzle.newDomino(0, 0);
-    // puzzle.newDomino(0, 1);
-    // puzzle.newDomino(0, 2);
-    // puzzle.newDomino(0, 3);
-    // puzzle.newDomino(0, 4);
-    // puzzle.newDomino(0, 5);
-    // puzzle.newDomino(0, 6);
-    // puzzle.newDomino(1, 1);
-    // puzzle.newDomino(1, 2);
-    // puzzle.newDomino(1, 3);
-    // puzzle.newDomino(1, 4);
-    // puzzle.newDomino(1, 5);
-    // puzzle.newDomino(1, 6);
-    // puzzle.newDomino(2, 2);
-    // puzzle.newDomino(2, 3);
-    // puzzle.newDomino(2, 4);
-    // puzzle.newDomino(2, 5);
-    // puzzle.newDomino(2, 6);
-    // puzzle.newDomino(3, 3);
-    // puzzle.newDomino(3, 4);
-    // puzzle.newDomino(3, 5);
-    // puzzle.newDomino(3, 6);
-    // puzzle.newDomino(4, 4);
-    // puzzle.newDomino(4, 5);
-    // puzzle.newDomino(4, 6);
-    // puzzle.newDomino(5, 5); 
-    // puzzle.newDomino(5, 6);
-    // puzzle.newDomino(6, 6);
+    std::string line = "";      //container for reading line from file 
+    int val1 = 0, val2 = 0;     //containers for casting piece chars to int before creating domino
+    //read pieces file 
+    std::ifstream pieceFile(argv[1]); 
+    if (pieceFile.is_open()) {
+        while(std::getline(pieceFile, line)){
+            if (line.size() > 3 || line.at(1) != '-'){
+                std::cout << "Unexpected line read from file." << std::endl; 
+                std::cout << "The piece file must be the first arguemnt to this program" << std::endl; 
+                return -1; 
+            }
+            val1 = line.at(0) - '0'; 
+            val2 = line.at(2) - '0'; 
 
+            puzzle.newDomino(val1, val2); 
+        }
+        pieceFile.close();
+    }else{
+        std::cout << "Failed to open piece file: " << argv[1] << std::endl; 
+        return -1; 
+    }
 
-    //test case - 3
-    puzzle.board.addSpace(4, 0, 6);
-    puzzle.board.addSpace(5, 0, 6);
-    puzzle.board.addSpace(3, 1, 6);
-    puzzle.board.addSpace(4, 1, 0);
-    puzzle.board.addSpace(5, 1, 3);
-    puzzle.board.addSpace(6, 1, 3);
-    puzzle.board.addSpace(3, 2, 5);
-    puzzle.board.addSpace(4, 2, 4);
-    puzzle.board.addSpace(5, 2, 4);
-    puzzle.board.addSpace(6, 2, 3);
-    puzzle.board.addSpace(1, 3, 4);
-    puzzle.board.addSpace(2, 3, 5);
-    puzzle.board.addSpace(3, 3, 5);
-    puzzle.board.addSpace(4, 3, 5);
-    puzzle.board.addSpace(5, 3, 4);
-    puzzle.board.addSpace(6, 3, 4);
-    puzzle.board.addSpace(7, 3, 3);
-    puzzle.board.addSpace(8, 3, 4);
-    puzzle.board.addSpace(0, 4, 2);
-    puzzle.board.addSpace(1, 4, 2);
-    puzzle.board.addSpace(2, 4, 3);
-    puzzle.board.addSpace(3, 4, 0);
-    puzzle.board.addSpace(4, 4, 0);
-    puzzle.board.addSpace(5, 4, 0);
-    puzzle.board.addSpace(6, 4, 1);
-    puzzle.board.addSpace(7, 4, 0);
-    puzzle.board.addSpace(8, 4, 0);
-    puzzle.board.addSpace(9, 4, 0);
-    puzzle.board.addSpace(0, 5, 3);
-    puzzle.board.addSpace(1, 5, 3);
-    puzzle.board.addSpace(2, 5, 2);
-    puzzle.board.addSpace(3, 5, 2);
-    puzzle.board.addSpace(4, 5, 0);
-    puzzle.board.addSpace(5, 5, 1);
-    puzzle.board.addSpace(6, 5, 1);
-    puzzle.board.addSpace(7, 5, 4);
-    puzzle.board.addSpace(8, 5, 5);
-    puzzle.board.addSpace(9, 5, 5);
-    puzzle.board.addSpace(1, 6, 1);
-    puzzle.board.addSpace(2, 6, 5);
-    puzzle.board.addSpace(3, 6, 2);
-    puzzle.board.addSpace(4, 6, 2);
-    puzzle.board.addSpace(5, 6, 2);
-    puzzle.board.addSpace(6, 6, 1);
-    puzzle.board.addSpace(7, 6, 1);
-    puzzle.board.addSpace(8, 6, 1);
-    puzzle.board.addSpace(3, 7, 6);
-    puzzle.board.addSpace(4, 7, 2);
-    puzzle.board.addSpace(5, 7, 6);
-    puzzle.board.addSpace(6, 7, 3);
-    puzzle.board.addSpace(3, 8, 1);
-    puzzle.board.addSpace(4, 8, 6);
-    puzzle.board.addSpace(5, 8, 6);
-    puzzle.board.addSpace(6, 8, 6);
-    puzzle.board.addSpace(4, 9, 5);
-    puzzle.board.addSpace(5, 9, 4); 
+    int readLineCounter = 0;    //counter for tracking number of lines read from file
+    //read board 
+    std::ifstream boardFile(argv[2]); 
+    if (boardFile.is_open()){
+        while(std::getline(boardFile, line)){ 
+            for (int i = 0; i < line.size(); i++){
+                if (line.at(i) != ' '){
+                    val1 = line.at(i) - '0';
+                    puzzle.board.addSpace(i, readLineCounter, val1); 
+                }
+            }
+            readLineCounter++; 
+        }
+        boardFile.close(); 
+    }else{
+        std::cout << "Failed to open board file: " << argv[2] << std::endl; 
+        return -1; 
+    }
 
-    puzzle.newDomino(0, 0);
-    puzzle.newDomino(0, 1);
-    puzzle.newDomino(0, 2);
-    puzzle.newDomino(0, 3);
-    puzzle.newDomino(0, 4);
-    puzzle.newDomino(0, 5);
-    puzzle.newDomino(0, 6);
-    puzzle.newDomino(1, 1);
-    puzzle.newDomino(1, 2);
-    puzzle.newDomino(1, 3);
-    puzzle.newDomino(1, 4);
-    puzzle.newDomino(1, 5);
-    puzzle.newDomino(1, 6);
-    puzzle.newDomino(2, 2); 
-    puzzle.newDomino(2, 3);
-    puzzle.newDomino(2, 4);
-    puzzle.newDomino(2, 5);
-    puzzle.newDomino(2, 6);
-    puzzle.newDomino(3, 3);
-    puzzle.newDomino(3, 4);
-    puzzle.newDomino(3, 5);
-    puzzle.newDomino(3, 6); 
-    puzzle.newDomino(4, 4);
-    puzzle.newDomino(4, 5);
-    puzzle.newDomino(4, 6);
-    puzzle.newDomino(5, 5);
-    puzzle.newDomino(5, 6); 
-    puzzle.newDomino(6, 6);
-
+    std::cout << "Attempting to solve file: " << argv[2] << std::endl;
     puzzle.solve(); 
 }
